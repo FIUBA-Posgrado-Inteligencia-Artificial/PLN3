@@ -59,17 +59,19 @@ OPENAI_API_KEY=tu_api_key_openai
 
 ## 4. Preparación del corpus
 
-Coloque sus PDFs en `./corpus/`.
+Coloque sus PDFs en la carpeta indicada por `corpus_dir` de `config.json`.
+
+`config.json` contiene los modelos, índice, namespace, chunking y parámetros de ejecución. Las credenciales se leen de `.env`; las variables de entorno tienen prioridad. Ejecute los comandos desde `RAG`. La consulta utiliza el corpus previamente indexado sin volver a subirlo.
 Cada **página** se procesa como un `Document` y luego se divide en *chunks* de \~200 tokens con solapamiento (\~60 tokens).
 
 ---
 
-## 5. Ingesta y construcción del índice vectorial --> Si de entrada se busca trabajar con un namespace especifico, hace falta agregarlo (por ejemplo: "v2-200tok", que es el que contiene el siguiente codigo). 
+## 5. Ingesta y construcción del índice vectorial
 
 Ejecute:
 
 ```bash
-python src/build_pinecone_index.py
+python -m main_test_scripts.build_pinecone_index
 ```
 
 Este script:
@@ -81,12 +83,12 @@ Este script:
 
 ---
 
-## 6. Consulta híbrida con re-ranqueo--> Si se usa el espacio ya generado, se requiere comentar el clear_namespace(). Este codigo contiene un namespace.
+## 6. Consulta híbrida con re-ranqueo
 
 Ejemplo de búsqueda:
 
 ```bash
-python src/rag_demo_pinecone.py
+python -m main_test_scripts.rag_demo_pinecone "How does ARENA implement decision traceability?"
 ```
 
 Flujo:
@@ -104,7 +106,7 @@ Flujo:
 Si dispone de juicios de relevancia:
 
 ```bash
-python src/evaluate_retrieval.py --docs data/docs.jsonl --qrels data/qrels.csv
+python -m main_test_scripts.evaluate_retrieval --docs data/docs_sample_en.jsonl --qrels data/qrels_sample_en.csv
 ```
 
 * **docs.jsonl:** corpus serializado (un documento por línea).

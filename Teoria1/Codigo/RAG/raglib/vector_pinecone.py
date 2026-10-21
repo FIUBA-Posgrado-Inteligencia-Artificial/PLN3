@@ -2,31 +2,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 import os
+import time
+from .config import CONFIG
 from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone, ServerlessSpec
-from typing import Dict, List, Tuple, Optional
-
-
-
 
 # Convención de IDs de chunk: f"{doc_id}::chunk_{local_idx}"
 def make_chunk_id(doc_id: str, local_idx: int) -> str:
     return f"{doc_id}::chunk_{local_idx}"
 
 def parse_chunk_id(chunk_id: str) -> Tuple[str, int]:
-    doc_id, rest = chunk_id.split("::", 1)
-    i = int(rest.replace("chunk_", ""))
+    doc_id, rest = chunk_id.rsplit("::chunk_", 1)
+    i = int(rest)
     return doc_id, i
 
 def ensure_pinecone_index(
     pc: Pinecone,
     name: str,
     dim: int,
-    cloud: str = "aws",
-    region: str = "us-east-1",
-    metric: str = "cosine",
+    cloud: str = CONFIG["cloud"],
+    region: str = CONFIG["region"],
+    metric: str = CONFIG["metric"],
 ):
-    idxs = {i["name"]: i for i in pc.list_indexes().get("indexes", [])}
+    idxs = pc.list_indexes().names()
     if name not in idxs:
         pc.create_index(
             name=name,
@@ -34,19 +32,29 @@ def ensure_pinecone_index(
             metric=metric,
             spec=ServerlessSpec(cloud=cloud, region=region),
         )
+    deadline = time.monotonic() + CONFIG["index_ready_timeout"]
+    while True:
+        description = pc.describe_index(name)
+        if description.dimension != dim or description.metric != metric:
+            raise ValueError("La dimensión o métrica del índice no coincide con el modelo configurado.")
+        if description.status["ready"]:
+            break
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"El índice {name} no está disponible.")
+        time.sleep(1)
+
 
 @dataclass
 class PineconeSearcher:
     """
     Maneja embeddings + upsert + query sobre Pinecone.
-    Guarda registro local (chunk_id -> meta) para mapear resultados a texto y metadatos.
     """
-    index_name: str
-    model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
-    cloud: str = "aws"
-    region: str = "us-east-1"
+    index_name: str = CONFIG["index_name"]
+    model_name: str = CONFIG["model_name"]
+    cloud: str = CONFIG["cloud"]
+    region: str = CONFIG["region"]
     api_key: Optional[str] = None
-    namespace: str = "default"  # configurable
+    namespace: str = CONFIG["namespace"]
 
     def __post_init__(self):
         key = self.api_key or os.getenv("PINECONE_API_KEY")
@@ -57,41 +65,17 @@ class PineconeSearcher:
         dim = self.model.get_sentence_embedding_dimension()
         ensure_pinecone_index(self.pc, self.index_name, dim, cloud=self.cloud, region=self.region)
         self.index = self.pc.Index(self.index_name)
-        # registro local: chunk_id -> dict(text, doc_id, local_idx, source, page)
-        self.registry: Dict[str, Dict] = {}
 
     def _ns_vector_count(self) -> int:
         """Cantidad de vectores en la namespace actual."""
-        try:
-            stats = self.index.describe_index_stats()
-            ns = getattr(stats, "namespaces", None) or stats.get("namespaces", {})
-            if isinstance(ns, dict):
-                node = ns.get(self.namespace, {})
-                # Pinecone v3: {"vectorCount": N}
-                if isinstance(node, dict):
-                    return int(node.get("vectorCount", 0))
-        except Exception as e:
-            print(f"[WARN] describe_index_stats falló: {e}")
-        return 0
+        stats = self.index.describe_index_stats()
+        node = stats.namespaces.get(self.namespace)
+        return int(node.vector_count) if node else 0
 
-    # método de instancia
     def clear_namespace(self):
-        """
-        Borra TODO en esta namespace si existe.
-        Evita 404 'Namespace not found' en primeras corridas.
-        """
-        try:
-            # describe_index_stats devuelve un dict con 'namespaces'
-            stats = self.index.describe_index_stats()
-            ns = getattr(stats, "namespaces", None) or stats.get("namespaces", {})
-            if isinstance(ns, dict) and self.namespace in ns:
-                self.index.delete(deleteAll=True, namespace=self.namespace)
-            else:
-                # No hay nada que borrar (namespace aún no creada)
-                print(f"[INFO] Namespace '{self.namespace}' no existe todavía; skip clear.")
-        except Exception as e:
-            # No detengas la ejecución por esto; sólo avisa
-            print(f"[WARN] clear_namespace saltado: {e}")
+        stats = self.index.describe_index_stats()
+        if self.namespace in stats.namespaces:
+            self.index.delete(delete_all=True, namespace=self.namespace)
 
     def upsert_chunks(self, chunks_per_doc: Dict[str, List[str]], docs_meta: Dict[str, Dict]):
         vectors = []
@@ -108,17 +92,17 @@ class PineconeSearcher:
                     "page": (docs_meta.get(doc_id, {}) or {}).get("page", None),
                     "text": ch,
                 }
-                self.registry[chunk_id] = meta
+                meta = {key: value for key, value in meta.items() if value is not None}
                 vectors.append({"id": chunk_id, "values": v.tolist(), "metadata": meta})
+                if len(vectors) >= CONFIG["upsert_batch_size"]:
+                    self.index.upsert(vectors=vectors, namespace=self.namespace)
+                    vectors.clear()
 
-        print(f"[UPSERT] index={self.index_name} ns={self.namespace} vectors={len(vectors)} (antes={self._ns_vector_count()})")
-        B = 100
-        for i in range(0, len(vectors), B):
-            self.index.upsert(vectors=vectors[i:i+B], namespace=self.namespace)
-        print(f"[UPSERT] después={self._ns_vector_count()} en ns={self.namespace}")
+        if vectors:
+            self.index.upsert(vectors=vectors, namespace=self.namespace)
 
 
-    def search(self, query: str, top_k: int = 50, meta_filter: Optional[dict] = None) -> List[Tuple[str, float, Dict]]:
+    def search(self, query: str, top_k: int = CONFIG["top_retrieve"], meta_filter: Optional[dict] = None) -> List[Tuple[str, float, Dict]]:
         """
         Devuelve [(chunk_id, score, meta)], score mayor = más similar
         """
@@ -132,6 +116,6 @@ class PineconeSearcher:
         )
         out = []
         for m in res.matches:
-            meta = self.registry.get(m.id) or (m.metadata or {})
+            meta = m.metadata or {}
             out.append((m.id, float(m.score), meta))
         return out
