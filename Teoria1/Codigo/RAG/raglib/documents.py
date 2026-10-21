@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 import re
 import unicodedata
+from .config import CONFIG
 
 @dataclass
 class Document:
@@ -46,83 +47,24 @@ def _count_tokens(t: str) -> int:
     return len(simple_tokenize(t))
 
 def _slide_merge(sents: List[str], max_tok: int, overlap: int) -> List[str]:
-    """
-    Arma chunks concatenando oraciones hasta max_tok.
-    Aplica solapamiento de ~overlap tokens usando la cola del chunk previo.
-    Hace split adicional por ; : si una oración es enorme.
-    """
-    chunks: List[str] = []
-    buf: List[str] = []
-    buf_tokens = 0
-
-    def flush():
-        nonlocal buf, buf_tokens
-        if buf_tokens >= 40:  # mínimo útil
-            txt = " ".join(buf).split()
-            # hard cap suave (max_tok + 20)
-            if len(txt) > max_tok + 20:
-                txt = txt[:max_tok + 20]
-            chunks.append(" ".join(txt))
-        buf, buf_tokens = [], 0
-
-    for s in sents:
-        st = _count_tokens(s)
-        # si una oración es enorme, intentá partir por ; :
-        if st > max_tok:
-            pieces = re.split(r"[;:]\s+", s)
-            for p in pieces:
-                pt = _count_tokens(p)
-                if pt == 0:
-                    continue
-                if pt > max_tok:
-                    # si sigue siendo enorme, recortá
-                    p = " ".join(p.split()[:max_tok])
-                    pt = _count_tokens(p)
-                if buf_tokens + pt <= max_tok:
-                    buf.append(p); buf_tokens += pt
-                else:
-                    flush()
-                    # overlap: tomar cola del último chunk
-                    if chunks:
-                        tail = " ".join(chunks[-1].split()[-overlap:])
-                        buf, buf_tokens = [tail], _count_tokens(tail)
-                    buf.append(p); buf_tokens += pt
-            continue
-
-        # caso normal
-        if buf_tokens + st <= max_tok:
-            buf.append(s); buf_tokens += st
-        else:
-            flush()
-            if chunks:
-                tail = " ".join(chunks[-1].split()[-overlap:])
-                buf, buf_tokens = [tail], _count_tokens(tail)
-            buf.append(s); buf_tokens += st
-
-    if buf:
-        flush()
+    text = " ".join(sents)
+    tokens = list(_TOKEN_RE.finditer(text))
+    chunks = []
+    start = 0
+    while start < len(tokens):
+        end = min(start + max_tok, len(tokens))
+        left = 0 if start == 0 else tokens[start].start()
+        right = tokens[end].start() if end < len(tokens) else len(text)
+        chunks.append(text[left:right].strip())
+        if end == len(tokens):
+            break
+        start = end - overlap
     return chunks
 
-def chunk_text(text: str, max_tokens: int = 200, overlap: int = 60) -> List[str]:
-    """
-    Chunking:
-      - target ~200 tokens por chunk
-      - solapamiento ~60 tokens
-      - descarta chunks < 20 tokens
-      - recorta > 220 tokens
-    """
-    if not text:
-        return []
-    norm = _normalize(text)
-    sents = _split_sentences(norm)
-    if not sents:
-        return []
-    chunks = _slide_merge(sents, max_tok=max_tokens, overlap=overlap)
 
-    # filtro final de longitud
-    out: List[str] = []
-    for ch in chunks:
-        nt = _count_tokens(ch)
-        if 20 <= nt <= 220:  
-            out.append(ch)
-    return out
+def chunk_text(text: str, max_tokens: int = CONFIG["max_tokens_chunk"],
+               overlap: int = CONFIG["overlap"]) -> List[str]:
+    """Divide texto normalizado en ventanas con solapamiento de tokens léxicos."""
+    if max_tokens <= 0 or not 0 <= overlap < max_tokens:
+        raise ValueError("Se requiere max_tokens > 0 y 0 <= overlap < max_tokens.")
+    return _slide_merge(_split_sentences(_normalize(text)), max_tokens, overlap)

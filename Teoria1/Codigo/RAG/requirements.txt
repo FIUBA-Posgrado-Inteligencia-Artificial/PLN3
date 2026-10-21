@@ -6,4 +6,3 @@ pinecone==7.3.0
 python-dotenv==1.1.1
 rank_bm25==0.2.2
 sentence_transformers==5.1.0
-python-dotenv   # opcional, para cargar API key desde .env

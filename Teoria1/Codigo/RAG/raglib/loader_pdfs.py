@@ -9,6 +9,7 @@ Loader de PDFs → Document + chunking
 from pathlib import Path
 from typing import List, Dict
 from .documents import Document, chunk_text
+from .config import CONFIG
 import re
 import unicodedata
 from typing import Iterable, Tuple
@@ -57,37 +58,20 @@ def _noise_ratio(line: str) -> float:
     letters = sum(ch.isalnum() for ch in line)
     return 1.0 - (letters / max(1, len(line)))
 
-def _looks_header_footer(lines: Iterable[str]) -> Tuple[set, set]:
-    """
-    Heurística simple: si la 1ª línea o la última línea se repite en >=30% de páginas,
-    considéralas encabezado/pie
-    """
-    return set(), set()
-
 def _clean_line(line: str) -> str:
     # elimina soft hyphen y controla símbolos extraños
     line = _SOFT_HYPH.sub("", line)
-    # quita urls complejas que ensucian tokens
-    if _URL_LINE.search(line):
-        line = _URL_LINE.sub("", line)
-    # quita caracteres de control/raros
-    line = _NONWORD.sub(" ", line)
+    line = "".join(ch for ch in line if ch.isprintable() or ch.isspace())
     # colapsa espacios
     line = _MULTI_SPACE.sub(" ", line).strip()
     return line
 
 def _is_junky(line: str) -> bool:
     # líneas demasiado “símbolo” o con muy poca señal alfabética
-    if len(line) <= 2:
-        return True
     if _PAGE_NUM.match(line) or _SECTION_NUM.match(line):
         return True
     # muchas secuencias de símbolos (cuadros, barras, etc.)
-    if len(_MANY_SYMBOLS.findall(line)) >= 2:
-        return True
     # si más del 45% no son alfanuméricos/espacios, descarta
-    if _noise_ratio(line) > 0.45:
-        return True
     return False
 
 def _merge_short_lines(lines: list, max_len: int = 60) -> list:
@@ -114,7 +98,7 @@ def _clean(text: str) -> str:
     Limpieza mejorada del texto extraído:
       - Normaliza Unicode/espacios/ligaduras
       - Dehyphenation (palabra-\npalabra)
-      - Elimina líneas ruidosas (headers, pies, urls, símbolos)
+      - Elimina caracteres de control y números de página
       - Junta líneas muy cortas
     """
     if not text:
@@ -186,15 +170,17 @@ def folder_pdfs_to_documents(folder: Path, recursive: bool = True) -> List[Docum
     """
     pattern = "**/*.pdf" if recursive else "*.pdf"
     docs: List[Document] = []
-    for pdf_path in folder.glob(pattern):
-        docs.extend(pdf_to_documents(pdf_path))
+    if not folder.is_dir():
+        raise FileNotFoundError(f"No existe la carpeta: {folder}")
+    for pdf_path in sorted(folder.glob(pattern)):
+        docs.extend(pdf_to_documents(pdf_path, doc_id_prefix=pdf_path.relative_to(folder).with_suffix("").as_posix()))
     return docs
 
 
 def documents_to_chunks(
     docs: List[Document],
-    max_tokens_chunk: int = 400,
-    overlap: int = 100
+    max_tokens_chunk: int = CONFIG["max_tokens_chunk"],
+    overlap: int = CONFIG["overlap"]
 ) -> Dict[str, List[str]]:
     """
     Convierte cada Document en sus chunks de texto.
@@ -207,17 +193,8 @@ def documents_to_chunks(
     for d in docs:
         chunks = chunk_text(d.text, max_tokens_chunk, overlap)
 
-        if not chunks:
-            # fallback para páginas cortas: un solo chunk recortado a ~max_tokens_chunk palabras
-            txt = " ".join((d.text or "").split())
-            if txt:
-                words = txt.split()
-                if len(words) > max_tokens_chunk:
-                    words = words[:max_tokens_chunk]
-                chunks = [" ".join(words)]
-            else:
-                chunks = []  # si realmente está vacío, dejamos vacío
-
+        if d.id in out:
+            raise ValueError(f"ID de documento duplicado: {d.id}")
         out[d.id] = chunks
     return out
 
@@ -225,10 +202,11 @@ def documents_to_chunks(
 
 #  Demo de uso rápido 
 if __name__ == "__main__":
-    corpus_dir = Path("./corpus")   # Carpeta con PDFs
+    from .config import resolve_path
+    corpus_dir = resolve_path(CONFIG["corpus_dir"])   # Carpeta con PDFs
     all_docs = folder_pdfs_to_documents(corpus_dir, recursive=True)
     print(f"Se leyeron {len(all_docs)} páginas con texto.")
 
-    chunks_map = documents_to_chunks(all_docs, max_tokens_chunk=300, overlap=80)
+    chunks_map = documents_to_chunks(all_docs, max_tokens_chunk=CONFIG["max_tokens_chunk"], overlap=CONFIG["overlap"])
     n_chunks = sum(len(v) for v in chunks_map.values())
     print(f"Se generaron {n_chunks} chunks.")
