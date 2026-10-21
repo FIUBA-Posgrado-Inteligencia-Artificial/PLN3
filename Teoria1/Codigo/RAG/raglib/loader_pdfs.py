@@ -13,7 +13,9 @@ from .config import CONFIG
 import re
 import unicodedata
 from typing import Iterable, Tuple
+import logging
 
+logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
 
 # Librería para leer PDFs

@@ -1,5 +1,5 @@
 {
-  "index_name": "pln3-index",
+  "index_name": "pln3-rag-minilm-385",
   "cloud": "aws",
   "region": "us-east-1",
   "namespace": "v2-200tok",
