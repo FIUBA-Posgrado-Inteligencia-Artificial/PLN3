@@ -1,0 +1,5 @@
+# Complemento opcional para Python 3.12 / Windows de 64 bits (inferencia en CPU).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.6.0+cpu
+transformers==4.51.3
+sentencepiece==0.2.0
