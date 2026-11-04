@@ -1,0 +1,23 @@
+.venv/
+venv/
+env/
+.virtualenv/
+.env
+.env.*
+!.env.example
+.tmp/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+*.tmp
+logs/
+# Descargas locales del detector (la caché predeterminada queda fuera del proyecto).
+.cache/
+models/
+*.safetensors
+*.pt
+*.pth
+*.onnx

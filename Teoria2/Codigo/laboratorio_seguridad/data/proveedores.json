@@ -1,0 +1,26 @@
+[
+  {
+    "id": "PROV-001",
+    "nombre": "Envases del Ceibo",
+    "estado": "APROBADO",
+    "seguro_vigente": true,
+    "continuidad_validada": true,
+    "homologacion_completa": true
+  },
+  {
+    "id": "PROV-002",
+    "nombre": "Cartonera del Estuario",
+    "estado": "PENDIENTE",
+    "seguro_vigente": true,
+    "continuidad_validada": true,
+    "homologacion_completa": true
+  },
+  {
+    "id": "PROV-003",
+    "nombre": "Transportes Bruma",
+    "estado": "PENDIENTE",
+    "seguro_vigente": false,
+    "continuidad_validada": false,
+    "homologacion_completa": true
+  }
+]
